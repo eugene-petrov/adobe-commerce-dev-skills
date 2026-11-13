@@ -1,0 +1,3 @@
+magento-exec-shell-cmd
+magento-backend
+magento-luma-frontend

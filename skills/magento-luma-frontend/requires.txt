@@ -1,0 +1,2 @@
+magento-exec-shell-cmd
+magento-backend
