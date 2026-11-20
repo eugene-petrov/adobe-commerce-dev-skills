@@ -55,7 +55,7 @@ export MAGENTO_EXEC="docker compose exec -T my-php-service"
 ## Sensitive-data guard hook
 
 A hook for Claude Code, Codex and Cursor that stops the agent from reading secrets and customer data by
-accident. Needs Node.js.
+accident.
 
 ```bash
 ./install.sh --hooks --agent claude   # or codex, cursor

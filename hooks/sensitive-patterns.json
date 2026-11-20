@@ -1,5 +1,5 @@
 {
-  "_comment": "Default rules of guard-sensitive.js. Regexes are JavaScript, case-insensitive. Levels: deny (always blocked) or ask (the user decides). Override per project with .ai-sensitive.json (see README).",
+  "_comment": "Default rules of guard-sensitive.js: JavaScript regexes, case-insensitive; level deny or ask. Overrides: hooks/README.md.",
   "paths": [
     {
       "id": "magento-env",

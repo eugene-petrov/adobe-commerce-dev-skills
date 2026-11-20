@@ -1,5 +1,4 @@
-# Copy to <project>/.cursorignore: Cursor does not index these files or put them into AI context.
-# Second layer next to the guard hook (hooks/guard-sensitive.js); keep both in sync with sensitive-patterns.json.
+# Copy to <project>/.cursorignore: Cursor will not index these files or send them to the AI.
 app/etc/env.php
 app/etc/env.php.*
 auth.json

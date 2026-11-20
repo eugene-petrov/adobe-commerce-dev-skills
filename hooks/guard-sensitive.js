@@ -1,18 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// Best-effort guard that stops AI coding agents from reading secrets and personal data by accident:
-// Magento app/etc/env.php, auth.json, .env, keys, dumps, logs, SELECTs from customer/order tables.
-// It is NOT a security boundary: a shell command can always be obfuscated past pattern matching.
-//
-// One script for several agents (the installer passes --agent):
-//   claude  Claude Code PreToolUse  -> stdout hookSpecificOutput.permissionDecision deny|ask
-//   codex   Codex PreToolUse        -> exit 2 + stderr (no native "ask": the agent must ask the user and
-//                                      rerun the command with AI_GUARD_ALLOW=1; only for "ask" rules)
-//   cursor  Cursor beforeReadFile / beforeShellExecution / beforeMCPExecution -> stdout {"permission": ...}
-//
-// Rules: sensitive-patterns.json next to this file, extended per project by .ai-sensitive.json
-// (searched from the working directory upwards).
+// Stops AI agents from reading secrets and personal data by accident (not a security boundary).
+// Usage: guard-sensitive.js --agent claude|codex|cursor, tool-call JSON on stdin. See README.md.
 
 const fs = require('fs');
 const os = require('os');
@@ -28,14 +18,13 @@ const META_COMMANDS = new Set(['ls', 'stat', 'du', 'wc', 'touch', 'test', '[', '
 const COPY_COMMANDS = new Set(['cp', 'mv', 'ln', 'install']);
 
 function main() {
-    const agent = argValue('--agent') || '';
+    const who = argValue('--agent') || 'codex';
     let input = {};
     try {
         input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     } catch (e) {
-        return finish(detectAgent(agent, input), input, { level: 'allow', reasons: [] });
+        return finish(who, input, { level: 'allow', reasons: [] });
     }
-    const who = detectAgent(agent, input);
     let decision = { level: 'allow', reasons: [] };
     try {
         const subject = extract(input);
@@ -50,10 +39,7 @@ function main() {
     finish(who, input, decision);
 }
 
-// Where "ask" cannot reach the user as a prompt, the hook blocks instead and the agent must ask in chat, then
-// rerun with AI_GUARD_ALLOW=1: Codex (no ask), and Claude Code modes without prompts - bypassPermissions
-// disables them, dontAsk auto-denies them. In "auto" mode a hook "ask" still prompts the user (Claude Code
-// hooks docs), so the native prompt is kept there.
+// No prompt can reach the user here, so "ask" blocks and the agent asks in chat (Claude "auto" still prompts).
 const NO_PROMPT_MODES = new Set(['bypassPermissions', 'dontAsk']);
 
 function needsChatApproval(agent, input) {
@@ -66,34 +52,22 @@ function argValue(name) {
     return i > -1 ? process.argv[i + 1] : '';
 }
 
-function detectAgent(agent, input) {
-    if (agent) return agent;
-    if (input.cursor_version || /^(before|after)[A-Z]/.test(input.hook_event_name || '')) return 'cursor';
-    if (input.permission_mode !== undefined || input.transcript_path) return 'claude';
-    return 'codex';
-}
-
-// ---------------------------------------------------------------------------------------------------------
-// What does this tool call touch? -> { kind, cwd, paths: [], texts: [] (shell commands), sql: [] }
-
+// What the tool call touches: { cwd, paths, texts (shell commands), sql }.
 function extract(input) {
     const event = input.hook_event_name || '';
     const roots = Array.isArray(input.workspace_roots) ? input.workspace_roots : [];
-    const subject = { kind: 'tool', cwd: input.cwd || roots[0] || process.cwd(), paths: [], texts: [], sql: [] };
+    const subject = { cwd: input.cwd || roots[0] || process.cwd(), paths: [], texts: [], sql: [] };
 
     if (event === 'beforeReadFile' || event === 'beforeTabFileRead') {
-        subject.kind = 'read';
         pushString(subject.paths, input.file_path);
         for (const a of Array.isArray(input.attachments) ? input.attachments : []) pushString(subject.paths, a && a.file_path);
         return subject;
     }
     if (event === 'beforeShellExecution') {
-        subject.kind = 'shell';
         pushString(subject.texts, input.command);
         return subject;
     }
     if (event === 'beforeMCPExecution') {
-        subject.kind = 'mcp';
         let args = input.tool_input;
         if (typeof args === 'string') {
             try { args = JSON.parse(args); } catch (e) { /* keep the raw string */ }
@@ -102,7 +76,7 @@ function extract(input) {
         return subject;
     }
 
-    // Claude Code / Codex PreToolUse (and anything shaped like it).
+    // Claude Code / Codex PreToolUse.
     const tool = String(input.tool_name || input.toolName || '').toLowerCase();
     let ti = input.tool_input !== undefined ? input.tool_input : input.toolInput;
     if (typeof ti === 'string') {
@@ -119,7 +93,6 @@ function extract(input) {
     let command = ti.command !== undefined ? ti.command : ti.cmd;
     if (Array.isArray(command)) command = command.join(' ');
     if (typeof command === 'string' && command) {
-        subject.kind = 'shell';
         subject.texts.push(command);
         return subject;
     }
@@ -129,10 +102,7 @@ function extract(input) {
         for (const m of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) subject.paths.push(m[1].trim());
         return subject;
     }
-    if (!FILE_TOOLS.has(tool)) {
-        subject.kind = 'mcp';
-        collectArgs(ti, '', subject, 0);
-    }
+    if (!FILE_TOOLS.has(tool)) collectArgs(ti, '', subject, 0);
     return subject;
 }
 
@@ -140,9 +110,8 @@ function pushString(list, value) {
     if (typeof value === 'string' && value) list.push(value);
 }
 
-// MCP / other tool arguments: only what can read something - path-like values, command strings and SQL.
-// Free text (chat messages, document bodies, titles) is content the agent writes, not a read.
-// Path keys: file, file_path, source-file, paths, filePath, notebookPath, targetDir... but not "profile".
+// MCP arguments: only path-like values, command strings and SQL; free text (messages, bodies) is written, not read.
+// Path keys: file, file_path, paths, filePath, targetDir... but not "profile".
 const PATH_KEY_SNAKE = /(^|[_-])(path|file|filename|dir|directory|folder)s?$/i;
 const PATH_KEY_CAMEL = /[a-z0-9](Path|File|Filename|FileName|Dir|Directory|Folder)s?$/;
 const PATH_KEY_EXACT = /^(target|source|src|dest|destination|uri)$/i;
@@ -180,8 +149,7 @@ function looksLikePath(value) {
     return value.length < 1024 && !/\s/.test(value) && (/[\/\\]/.test(value) || /^[.~]/.test(value));
 }
 
-// Shell text that is written, not read: git/gh messages and heredocs redirected into a file.
-// Text that the shell would execute (command substitution, unquoted-heredoc expansion) is never skipped.
+// Drops text that is written, not read (git/gh messages, heredocs into a file) unless the shell would execute it.
 const SUBSTITUTION = /\$\(|`/;
 const HEREDOC = /^([^\n]*<<-?[ \t]*(['"]?)([A-Za-z_]\w*)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/gm;
 
@@ -203,8 +171,7 @@ function stripWrittenText(text) {
     });
 }
 
-// Index where the simple command containing position `end` starts: after the last &&, ||, ;, | or newline
-// that is outside quotes.
+// Start of the command that contains position `end`: after the last unquoted &&, ||, ;, | or newline.
 function commandStart(text, end) {
     let start = 0;
     let quote = '';
@@ -222,13 +189,11 @@ function commandStart(text, end) {
     return start;
 }
 
-// The flag belongs to git commit/tag/notes/stash or gh pr/issue/release (env assignments may precede it).
 function isMessageCommand(prefix) {
     return /^\s*(?:[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)*(?:git\s+(?:-C\s+\S+\s+)?(?:commit|tag|notes|stash)|gh\s+(?:pr|issue|release))\b/.test(prefix.replace(/^&/, ''));
 }
 
-// A message value is inert when the shell substitutes nothing in it: single-quoted, or double-quoted
-// without $(...)/backticks, or the usual "$(cat <<'EOF' ... EOF)" form with a plain body.
+// Nothing is substituted: single quotes, double quotes without $(...)/backticks, or "$(cat <<'EOF' ... EOF)".
 function isInertMessage(value) {
     if (value.startsWith("'")) return true;
     const heredoc = value.match(/^"\$\(cat <<-?[ \t]*(['"]?)([A-Za-z_]\w*)\1[ \t]*\n([\s\S]*?)\n[ \t]*\2[ \t]*\n?\)"$/);
@@ -236,23 +201,14 @@ function isInertMessage(value) {
     return !SUBSTITUTION.test(value.replace(/\\[`$]/g, ''));
 }
 
-// The heredoc's own command (after the last && ; ||) only writes it to a file: cat > f, cat >> f, tee f.
+// cat > f, cat >> f or tee f, not piped further.
 function writesToFile(head) {
     const command = head.split(/&&|\|\||;/).pop().trim();
     if (command.includes('|')) return false;
     return /^cat\b.*>/.test(command) || /^tee\s/.test(command);
 }
 
-// ---------------------------------------------------------------------------------------------------------
-// Rules
-
-// Three layers:
-//   defaults  sensitive-patterns.json next to this script
-//   user      $AI_SENSITIVE_CONFIG or ~/.config/ai-sensitive.json - trusted: may allow or disable anything
-//   project   .ai-sensitive.json found from the working directory upwards - untrusted (it comes with the
-//             repository): may add rules and tables, may disable only "ask" rules, and its allow-list applies
-//             only to "ask" rules and only to paths inside the project root, so a cloned repo cannot unlock
-//             env.php, ~/.ssh or any other "deny" path.
+// Rules: defaults + user config (trusted) + project .ai-sensitive.json (untrusted: cannot lift "deny" rules).
 const LEVELS = new Set(['deny', 'ask']);
 
 function loadConfig(dirs) {
@@ -328,9 +284,6 @@ function findUp(dirs, name) {
     return '';
 }
 
-// ---------------------------------------------------------------------------------------------------------
-// Evaluation
-
 function evaluate(subject, config) {
     const hits = [];
 
@@ -350,8 +303,7 @@ function evaluate(subject, config) {
         }
     }
 
-    // SQL rules see shell commands that run a database client (grep/rg over code with SQL in the pattern
-    // is not a query) and SQL found in tool arguments.
+    // SQL rules: shell commands that run SQL (not grep over code) and SQL in tool arguments.
     const shellSql = subject.texts.map(stripWrittenText).filter((t) => DB_CLIENT.test(t));
     for (const text of [...shellSql, ...subject.sql]) {
         for (const rule of config.text) {
@@ -368,7 +320,7 @@ function evaluate(subject, config) {
     for (const r of hits) {
         if (seen.has(r.id)) continue;
         seen.add(r.id);
-        reasons.push({ id: r.id, level: r.level, reason: r.reason || r.id, hint: r.hint || '', match: r.match || '' });
+        reasons.push({ id: r.id, reason: r.reason || r.id, hint: r.hint || '', match: r.match || '' });
     }
     return { level, reasons };
 }
@@ -385,8 +337,6 @@ function checkPath(candidate, head, cwd, config, hits) {
     for (const rule of config.paths) {
         if (projectAllowed && rule.level !== 'deny') continue;
         if (head && Array.isArray(rule.exceptCommands) && rule.exceptCommands.includes(head)) continue;
-        // onlyCommands: the rule is about what these commands do with the path (e.g. recursive search of a
-        // directory); direct file-tool calls (no head) are included.
         if (head && Array.isArray(rule.onlyCommands) && !rule.onlyCommands.includes(head)) continue;
         if (variants.some((v) => rule.re.test(v))) hits.push({ ...rule, match: raw });
     }
@@ -412,8 +362,7 @@ function lastArgument(segment) {
     return words.length > 1 ? words[words.length - 1].replace(/^['"]+|['"]+$/g, '') : '';
 }
 
-// ssh/scp/rsync/git use a private key without printing it: drop only the identity-file arguments from the
-// scan, so that reading or copying a key (ssh host 'cat ~/.ssh/id_rsa', scp host:~/.ssh/id_rsa .) is still caught.
+// The key given to ssh/scp/rsync/git (-i, IdentityFile) is used, not printed; printing or copying keys is still caught.
 function stripIdentityArgs(text) {
     if (!/\b(ssh|scp|sftp|rsync|GIT_SSH_COMMAND|RSYNC_RSH|sshCommand)\b/.test(text)) return text;
     return text
@@ -432,9 +381,6 @@ function piiHit(text, pii) {
     if (selects.length && selects.every((s) => countOnly.test(s))) return null;
     return { id: pii.id || 'pii-select', level: pii.level || 'ask', reason: pii.reason || 'SELECT from a personal-data table', hint: pii.hint || '', match: found[1] };
 }
-
-// ---------------------------------------------------------------------------------------------------------
-// Response per agent
 
 function finish(agent, input, decision) {
     const event = input.hook_event_name || '';

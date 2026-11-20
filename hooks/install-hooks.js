@@ -95,5 +95,5 @@ if (raw) fs.writeFileSync(`${file}.bak`, raw);
 fs.writeFileSync(file, out);
 console.log(`${uninstall ? 'removed ' : 'hooked  '} ${agent}: ${file}${raw ? ` (backup: ${file}.bak)` : ''}`);
 if (agent === 'codex' && !uninstall) {
-    console.log('         Codex runs a new or changed hook only after you trust it: review it when Codex asks (or via /hooks).');
+    console.log('         Codex runs a new or changed hook only after you trust it: review it when Codex asks.');
 }
