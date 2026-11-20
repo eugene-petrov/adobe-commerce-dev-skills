@@ -61,5 +61,26 @@ for (const c of cases) {
     }
 }
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(`\n${cases.length - failed}/${cases.length} passed`);
+let total = cases.length;
+
+// env-redacted.php on a fake env.php: no "fake_" value may survive. Skipped without a PHP on PATH.
+const redactor = path.join(__dirname, '..', '..', 'skills', 'magento-exec-shell-cmd', 'scripts', 'env-redacted.php');
+const php = spawnSync('php', [redactor], {
+    encoding: 'utf8',
+    env: { ...process.env, MAGENTO_ENV_PHP: path.join(__dirname, 'fixtures', 'fake-env.php') },
+});
+if (php.error) {
+    console.log('skip  env-redacted.php (no php on PATH)');
+} else {
+    total++;
+    const leaks = (php.stdout.match(/fake_[a-z_]+|99887766/g) || []);
+    if (php.status !== 0 || leaks.length || !/redis:\/\/\*{6}@redis/.test(php.stdout)) {
+        failed++;
+        console.log(`FAIL  env-redacted.php masks secrets: status ${php.status}, leaked ${leaks.join(', ') || 'none'}\n      ${php.stderr.trim()}`);
+    } else {
+        console.log('ok    env-redacted.php masks secrets');
+    }
+}
+
+console.log(`\n${total - failed}/${total} passed`);
 process.exit(failed ? 1 : 0);

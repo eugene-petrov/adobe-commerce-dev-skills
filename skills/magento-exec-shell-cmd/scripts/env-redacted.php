@@ -6,7 +6,8 @@
  */
 declare(strict_types=1);
 
-$file = getcwd() . '/app/etc/env.php';
+// MAGENTO_ENV_PHP: another file in the same format (tests, a copied config).
+$file = getenv('MAGENTO_ENV_PHP') ?: getcwd() . '/app/etc/env.php';
 if (!is_file($file)) {
     fwrite(STDERR, 'app/etc/env.php not found in ' . getcwd() . PHP_EOL);
     exit(1);
@@ -21,8 +22,13 @@ $mask = static function ($value, $key = '') use (&$mask, $secret) {
         }
         return $out;
     }
-    if (is_string($value) && $value !== '' && preg_match($secret, $key)) {
+    if ((is_string($value) && $value !== '' || is_int($value) || is_float($value)) && preg_match($secret, $key)) {
         return '******';
+    }
+    if (is_string($value)) {
+        // Credentials inside URLs/DSNs under any key: scheme://user:pass@host, ?auth=..., ?password=...
+        $value = (string)preg_replace('#(://)[^/@\s]+@#', '$1******@', $value);
+        $value = (string)preg_replace('/([?&;](?:auth|password|passwd|pass|pwd|secret|token|key)=)[^&;\s]*/i', '$1******', $value);
     }
     return $value;
 };

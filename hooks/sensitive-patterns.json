@@ -46,7 +46,7 @@
       "pattern": "(^|/)\\.ssh/(?!(config|known_hosts(\\.old)?|authorized_keys|[^/]*\\.pub)$)[^/]+$",
       "level": "deny",
       "reason": "SSH private keys",
-      "exceptCommands": ["ssh", "scp", "sftp", "rsync", "git", "ssh-add"]
+      "exceptCommands": ["ssh-add", "ssh-keygen"]
     },
     {
       "id": "credential-files",

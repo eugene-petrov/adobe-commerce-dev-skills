@@ -22,6 +22,10 @@ const RANK = { allow: 0, ask: 1, deny: 2 };
 const FILE_TOOLS = new Set(['read', 'edit', 'multiedit', 'write', 'notebookedit', 'notebookread', 'grep', 'glob', 'ls']);
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'xargs', 'nice']);
 const BYPASS = /\bAI_GUARD_ALLOW=1\b/;
+// Commands that look at names, sizes or existence, never at contents.
+const META_COMMANDS = new Set(['ls', 'stat', 'du', 'wc', 'touch', 'test', '[', '[[', 'file', 'realpath', 'readlink', 'basename', 'dirname']);
+// Commands whose last argument is a destination that is written, not read.
+const COPY_COMMANDS = new Set(['cp', 'mv', 'ln', 'install']);
 
 function main() {
     const agent = argValue('--agent') || '';
@@ -127,10 +131,20 @@ function pushString(list, value) {
 
 // MCP / other tool arguments: only what can read something - path-like values, command strings and SQL.
 // Free text (chat messages, document bodies, titles) is content the agent writes, not a read.
-const PATH_KEY = /(path|file|filename|dir|directory|folder)s?$|^(target|source|src|dest|destination|uri)$/i;
+// Path keys: file, file_path, source-file, paths, filePath, notebookPath, targetDir... but not "profile".
+const PATH_KEY_SNAKE = /(^|[_-])(path|file|filename|dir|directory|folder)s?$/i;
+const PATH_KEY_CAMEL = /[a-z0-9](Path|File|Filename|FileName|Dir|Directory|Folder)s?$/;
+const PATH_KEY_EXACT = /^(target|source|src|dest|destination|uri)$/i;
+const isPathKey = (key) => PATH_KEY_SNAKE.test(key) || PATH_KEY_CAMEL.test(key) || PATH_KEY_EXACT.test(key);
 const COMMAND_KEY = /^(command|cmd|script|shell)$/i;
 const SQL_RE = /\bselect\b[\s\S]*\b(from|join)\b/i;
-const DB_CLIENT = /(^|[\s;&|(\/])(mysql|mariadb|mysqlsh|psql|sqlite3|clickhouse-client)(\s|$)|\bwarden\s+db\b|\bddev\s+(mysql|psql)\b|\bn98-magerun2?(\.phar)?\s+db:query\b|\bdb:query\b/i;
+// Shell commands that can run SQL: database clients, and interpreters given inline code (-r/-c/-e or a heredoc).
+const DB_CLIENT = new RegExp([
+    /(^|[\s;&|(\/])(mysql|mariadb|mysqlsh|psql|sqlite3|clickhouse-client)(\s|$)/.source,
+    /\bwarden\s+db\b|\bddev\s+(mysql|psql)\b|\bn98-magerun2?(\.phar)?\s+db:query\b|\bdb:query\b/.source,
+    /(^|[\s;&|(\/])(php|python[0-9.]*|node|ruby|perl)\s+(-[A-Za-z]*\s+)*-[rce]\b/.source,
+    /(^|[\s;&|(\/])(php|python[0-9.]*|node|ruby|perl)(\s+-\S+)*\s*<</.source,
+].join('|'), 'i');
 
 function collectArgs(value, key, subject, depth) {
     if (depth > 8 || value === null || value === undefined) return;
@@ -147,7 +161,7 @@ function collectArgs(value, key, subject, depth) {
         subject.texts.push(value);
         return;
     }
-    if (PATH_KEY.test(key) || looksLikePath(value)) subject.paths.push(value);
+    if (isPathKey(key) || looksLikePath(value)) subject.paths.push(value);
     if (SQL_RE.test(value)) subject.sql.push(value);
 }
 
@@ -165,13 +179,41 @@ function stripWrittenText(text) {
     if (/\b(git\s+(commit|tag|notes|stash)|gh\s+(pr|issue|release))\b/.test(t)) {
         t = t.replace(
             /(\s(?:-m|--message|-t|--title|-b|--body|--notes)(?:\s+|=))("(?:[^"\\]|\\[\s\S])*"|'[^']*')/g,
-            (all, flag, value) => (isInertMessage(value) ? `${flag}""` : all)
+            (all, flag, value, offset, whole) => (
+                isMessageCommand(whole.slice(commandStart(whole, offset), offset)) && isInertMessage(value)
+                    ? `${flag}""`
+                    : all
+            )
         );
     }
     return t.replace(HEREDOC, (all, head, quote, tag, body) => {
         if (!quote && SUBSTITUTION.test(body)) return all; // <<EOF expands $(...) in the body
         return writesToFile(head) ? `${head}\n${tag}` : all;
     });
+}
+
+// Index where the simple command containing position `end` starts: after the last &&, ||, ;, | or newline
+// that is outside quotes.
+function commandStart(text, end) {
+    let start = 0;
+    let quote = '';
+    for (let i = 0; i < end; i++) {
+        const ch = text[i];
+        if (quote) {
+            if (ch === quote) quote = '';
+            else if (ch === '\\' && quote === '"') i++;
+            continue;
+        }
+        if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === '\\') i++;
+        else if (ch === ';' || ch === '\n' || ch === '|' || (ch === '&' && text[i + 1] === '&')) start = i + 1;
+    }
+    return start;
+}
+
+// The flag belongs to git commit/tag/notes/stash or gh pr/issue/release (env assignments may precede it).
+function isMessageCommand(prefix) {
+    return /^\s*(?:[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)*(?:git\s+(?:-C\s+\S+\s+)?(?:commit|tag|notes|stash)|gh\s+(?:pr|issue|release))\b/.test(prefix.replace(/^&/, ''));
 }
 
 // A message value is inert when the shell substitutes nothing in it: single-quoted, or double-quoted
@@ -284,11 +326,16 @@ function evaluate(subject, config) {
     for (const p of subject.paths) checkPath(p, '', subject.cwd, config, hits);
 
     for (const raw of subject.texts) {
-        const text = stripWrittenText(raw);
+        const text = stripIdentityArgs(stripWrittenText(raw));
         for (const segment of segments(text)) {
             const head = firstWord(segment);
             for (const rule of config.commands) if (rule.re.test(segment)) hits.push(rule);
-            for (const token of segment.match(/[\w.~\/@+-]+/g) || []) checkPath(token, head, subject.cwd, config, hits);
+            if (META_COMMANDS.has(head)) continue; // names, sizes, existence - not contents
+            const destination = COPY_COMMANDS.has(head) ? lastArgument(segment) : '';
+            for (const token of segment.match(/[\w.~\/@+-]+/g) || []) {
+                if (destination && token === destination) continue; // cp x .env writes .env, does not read it
+                checkPath(token, head, subject.cwd, config, hits);
+            }
         }
     }
 
@@ -342,10 +389,25 @@ function segments(text) {
 }
 
 function firstWord(segment) {
-    const words = segment.split(/\s+/);
+    // Leading VAR=value assignments, including quoted values with spaces (GIT_SSH_COMMAND='ssh -i k').
+    const words = segment.replace(/^\s*(?:[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S*)\s+)*/, '').split(/\s+/);
     let i = 0;
     while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || WRAPPERS.has(words[i]))) i++;
     return path.basename((words[i] || '').replace(/^['"(]+|['")]+$/g, ''));
+}
+
+function lastArgument(segment) {
+    const words = segment.split(/\s+/).filter((w) => w && !w.startsWith('-'));
+    return words.length > 1 ? words[words.length - 1].replace(/^['"]+|['"]+$/g, '') : '';
+}
+
+// ssh/scp/rsync/git use a private key without printing it: drop only the identity-file arguments from the
+// scan, so that reading or copying a key (ssh host 'cat ~/.ssh/id_rsa', scp host:~/.ssh/id_rsa .) is still caught.
+function stripIdentityArgs(text) {
+    if (!/\b(ssh|scp|sftp|rsync|GIT_SSH_COMMAND|RSYNC_RSH|sshCommand)\b/.test(text)) return text;
+    return text
+        .replace(/(^|[\s'"=])-i\s*(['"]?)[^\s'"]+\2/g, '$1')
+        .replace(/IdentityFile[=\s]+(['"]?)[^\s'"]+\1/gi, '');
 }
 
 function piiHit(text, pii) {

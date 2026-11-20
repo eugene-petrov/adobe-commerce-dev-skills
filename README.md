@@ -82,7 +82,13 @@ Text the agent writes is not inspected: chat messages and document bodies sent t
 Anything the shell would execute inside that text (`$(...)`, backticks, expansion in an unquoted `<<EOF`) is
 still checked, and so is a heredoc fed to an interpreter (`php <<EOF`, `cat <<EOF | php`, `mysql <<SQL`).
 SQL rules apply to shell commands only when they run a database client (`mysql`, `warden db`, `ddev mysql`,
-`psql`, `n98-magerun2 db:query`, ...), so `grep "select ... sales_order" app/code` passes.
+`psql`, `n98-magerun2 db:query`, ...) or an interpreter with inline code (`php -r`, `python -c`, `node -e`, a
+heredoc), so `grep "select ... sales_order" app/code` passes.
+
+Not treated as reads: commands that only look at names, sizes or existence (`ls`, `stat`, `du`, `wc`, `test`,
+`[`, `touch`, `file`), the destination of `cp`/`mv`/`ln` (`cp .env.example .env`), and the identity file given to
+`ssh`/`scp`/`rsync`/`git` (`-i`, `IdentityFile=`, `GIT_SSH_COMMAND`). Printing or copying a key is still caught
+(`ssh host 'cat ~/.ssh/id_rsa'`, `scp host:~/.ssh/id_rsa .`).
 
 "Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. Cursor file reads have no
 prompt, so they are denied. Codex has no prompt either: the hook blocks and tells the agent to ask the user and
