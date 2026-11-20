@@ -54,71 +54,20 @@ export MAGENTO_EXEC="docker compose exec -T my-php-service"
 
 ## Sensitive-data guard hook
 
-[hooks/guard-sensitive.js](hooks/guard-sensitive.js) is a `PreToolUse`-style hook for Claude Code, Codex and
-Cursor that stops an agent from reading secrets and personal data by accident. It needs Node.js and has no
-dependencies.
+A hook for Claude Code, Codex and Cursor that stops the agent from reading secrets and customer data by
+accident. Needs Node.js.
 
 ```bash
-./install.sh --hooks --agent claude    # ~/.claude/settings.json
-./install.sh --hooks --agent codex     # ~/.codex/hooks.json - then trust the hook when Codex asks
-./install.sh --hooks --agent cursor    # ~/.cursor/hooks.json (beforeReadFile / beforeShellExecution / beforeMCPExecution)
-./install.sh --uninstall-hooks --agent cursor
+./install.sh --hooks --agent claude   # or codex, cursor
 ```
 
-The installer adds one entry next to the existing hooks and writes `<config>.bak` first; re-running it is a no-op.
+- **Blocked:** `app/etc/env.php`, `auth.json`, `.env`, private keys and stored credentials.
+- **Asks you first:** logs, DB dumps, import/export files, `SELECT` from customer/order tables.
+- Instead of `env.php` use `bin/magento config:show <path>` or
+  `skills/magento-exec-shell-cmd/scripts/env-redacted.sh`.
 
-What it checks ([hooks/sensitive-patterns.json](hooks/sensitive-patterns.json)):
-
-| Level | What |
-|---|---|
-| deny | `app/etc/env.php`, `auth.json`, `.env*` (not `.env.example`/`.dist`), private keys, `~/.ssh` keys, stored credentials (`.git-credentials`, `.netrc`, `.my.cnf`, AWS, Docker, gh, magento-cloud) |
-| ask | `var/log`, `var/report`, import/export files and backups, `pub/media/customer`, DB dumps (files and `mysqldump`-like commands), `.magento.env.yaml`, registry configs, dumping the whole environment, `SELECT` from customer/order/quote/admin/token tables (except `COUNT(*)`), credential paths in `core_config_data` |
-
-The same rules apply to file tools (Read/Edit/Grep, Cursor file reads and attachments), to shell commands (paths
-mentioned anywhere in the command, e.g. `cat`, `php -r 'include ...'`, `grep ... auth.json`) and to MCP tool
-arguments that can read something: path-like values, `command` strings and SQL (e.g. a database MCP server).
-Text the agent writes is not inspected: chat messages and document bodies sent through MCP, `git commit` /
-`git tag` messages, `gh pr|issue` titles and bodies, and heredocs redirected into a file (`cat > f <<EOF`).
-Anything the shell would execute inside that text (`$(...)`, backticks, expansion in an unquoted `<<EOF`) is
-still checked, and so is a heredoc fed to an interpreter (`php <<EOF`, `cat <<EOF | php`, `mysql <<SQL`).
-SQL rules apply to shell commands only when they run a database client (`mysql`, `warden db`, `ddev mysql`,
-`psql`, `n98-magerun2 db:query`, ...) or an interpreter with inline code (`php -r`, `python -c`, `node -e`, a
-heredoc), so `grep "select ... sales_order" app/code` passes.
-
-Not treated as reads: commands that only look at names, sizes or existence (`ls`, `stat`, `du`, `wc`, `test`,
-`[`, `touch`, `file`), the destination of `cp`/`mv`/`ln` (`cp .env.example .env`), and the identity file given to
-`ssh`/`scp`/`rsync`/`git` (`-i`, `IdentityFile=`, `GIT_SSH_COMMAND`). Printing or copying a key is still caught
-(`ssh host 'cat ~/.ssh/id_rsa'`, `scp host:~/.ssh/id_rsa .`).
-
-"Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. In Claude Code this includes
-`auto` mode: a hook "ask" goes to the user, not to the auto-mode classifier. Cursor file reads have no prompt,
-so they are denied. Where no prompt can reach the user - Codex, and Claude Code in `bypassPermissions` or
-`dontAsk` mode - the hook blocks and tells the agent to ask the user in chat and rerun with
-`AI_GUARD_ALLOW=1`. That prefix is honored only there and never unlocks a "deny" rule.
-
-Safe alternatives the block messages point to: `bin/magento config:show <path>` (Magento masks sensitive
-values) and `skills/magento-exec-shell-cmd/scripts/env-redacted.sh` (prints `env.php` with secrets masked).
-
-Overrides (template: [templates/ai-sensitive.json](templates/ai-sensitive.json); keys `paths`, `piiTables`,
-`piiLevel`, `allow` regexes for false positives, `disable` by rule id):
-- **Project** - `.ai-sensitive.json` in the repository root. It comes with the repository, so it is not trusted:
-  it can add rules and tables, disable only "ask" rules, and its `allow` list lifts only "ask" rules for paths
-  inside the project root. A cloned repository cannot unlock `env.php`, `~/.ssh`, credentials or any "deny" rule.
-- **User** - `~/.config/ai-sensitive.json` (or the path in `AI_SENSITIVE_CONFIG`). Trusted: can allow or disable
-  anything, for every project.
-
-Second layers for the same files:
-[templates/claude-settings.deny.json](templates/claude-settings.deny.json) (Claude Code `permissions.deny`) and
-[templates/cursorignore](templates/cursorignore) (`.cursorignore`).
-
-Limits - read before relying on it:
-- It is a guard against accidents, not a security boundary. Shell commands can be obfuscated (variables, base64,
-  scripts written to disk first). Recursive search is not inspected file by file: searching `app/etc` itself
-  asks first, but `grep -r password .` over the project root reads whatever is not git-ignored.
-- The real protection is not having production secrets and data locally: anonymized database dumps, development
-  credentials only, and the agent's OS-level sandbox where available.
-
-Tests: `node hooks/test/run.js` (cases for all three agents in [hooks/test/cases.json](hooks/test/cases.json)).
+It prevents accidents, not attacks: keep production secrets and data out of local copies.
+Details, overrides and limits: [hooks/README.md](hooks/README.md).
 
 ## Contributing
 
