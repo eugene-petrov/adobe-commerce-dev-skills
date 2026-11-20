@@ -1,0 +1,23 @@
+# Copy to <project>/.cursorignore: Cursor will not index these files or send them to the AI.
+app/etc/env.php
+app/etc/env.php.*
+auth.json
+.env
+.env.*
+!.env.example
+!.env.dist
+.magento.env.yaml
+*.sql
+*.sql.*
+*.pem
+*.key
+var/log/
+var/report/
+var/export/
+var/import/
+var/importexport/
+var/import_history/
+var/backups/
+pub/media/customer/
+pub/media/customer_address/
+pub/media/import/

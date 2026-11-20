@@ -1,0 +1,150 @@
+{
+  "_comment": "Default rules of guard-sensitive.js: JavaScript regexes, case-insensitive; level deny or ask. Overrides: hooks/README.md.",
+  "paths": [
+    {
+      "id": "magento-env",
+      "pattern": "(^|/)app/etc/env\\.php([.~][^/]*)?$",
+      "level": "deny",
+      "reason": "app/etc/env.php holds DB/Redis/AMQP passwords and the crypt key",
+      "hint": "Use `bin/magento config:show <path>` (sensitive values are masked) or the magento-exec-shell-cmd helper scripts/env-redacted.sh."
+    },
+    {
+      "id": "composer-auth",
+      "pattern": "(^|/)auth\\.json$",
+      "level": "deny",
+      "reason": "auth.json holds repo.magento.com / private Composer repository keys"
+    },
+    {
+      "id": "dotenv",
+      "pattern": "(^|/)\\.env(\\.(?!example$|dist$|sample$|template$|defaults$)[^/]+)?$",
+      "level": "deny",
+      "reason": ".env files usually hold credentials and API keys",
+      "hint": "Use .env.example / .env.dist for the structure; for runtime detection use magento-exec-shell-cmd scripts/detect_env.sh."
+    },
+    {
+      "id": "cloud-env",
+      "pattern": "(^|/)\\.magento\\.env\\.yaml$",
+      "level": "ask",
+      "reason": ".magento.env.yaml may contain environment variables with secrets"
+    },
+    {
+      "id": "magento-etc-search",
+      "pattern": "(^|/)app/etc/?$",
+      "level": "ask",
+      "reason": "searching or copying the whole app/etc directory includes env.php",
+      "hint": "Search app/etc/config.php or app/etc/di.xml explicitly",
+      "onlyCommands": ["grep", "egrep", "fgrep", "rg", "ag", "ack", "git-grep", "tar", "zip", "cp", "rsync", "scp", "cat", "head", "tail", "less"]
+    },
+    {
+      "id": "private-keys",
+      "pattern": "\\.(pem|key|p12|pfx|jks|keystore)$",
+      "level": "deny",
+      "reason": "private keys and certificates"
+    },
+    {
+      "id": "ssh-keys",
+      "pattern": "(^|/)\\.ssh/(?!(config|known_hosts(\\.old)?|authorized_keys|[^/]*\\.pub)$)[^/]+$",
+      "level": "deny",
+      "reason": "SSH private keys",
+      "exceptCommands": ["ssh-add", "ssh-keygen"]
+    },
+    {
+      "id": "credential-files",
+      "pattern": "(^|/)(\\.git-credentials|\\.netrc|\\.pgpass|\\.my\\.cnf|\\.aws/credentials|\\.docker/config\\.json|\\.config/gh/hosts\\.yml|\\.magento-cloud/(?!bin/).+)$",
+      "level": "deny",
+      "reason": "stored credentials and CLI tokens",
+      "exceptCommands": ["magento-cloud"]
+    },
+    {
+      "id": "package-registry-config",
+      "pattern": "(^|/)(\\.npmrc|\\.yarnrc\\.yml|\\.pypirc)$",
+      "level": "ask",
+      "reason": "package registry config may contain auth tokens"
+    },
+    {
+      "id": "db-dumps",
+      "pattern": "\\.(sql|dump)(\\.(gz|bz2|xz|zst|zip))?$",
+      "level": "ask",
+      "reason": "database dumps usually contain customer and order data"
+    },
+    {
+      "id": "logs-reports",
+      "pattern": "(^|/)var/(log|report)(/|$)",
+      "level": "ask",
+      "reason": "logs and error reports can contain personal data, tokens and request payloads",
+      "exceptCommands": ["ls", "du", "stat", "wc"]
+    },
+    {
+      "id": "import-export-files",
+      "pattern": "(^|/)var/(export|import|importexport|import_history|backups)(/|$)",
+      "level": "ask",
+      "reason": "import/export files and backups usually contain customer or order data",
+      "exceptCommands": ["ls", "du", "stat", "wc"]
+    },
+    {
+      "id": "private-media",
+      "pattern": "(^|/)pub/media/(customer|customer_address|import)(/|$)",
+      "level": "ask",
+      "reason": "customer uploads and import files",
+      "exceptCommands": ["ls", "du", "stat", "wc"]
+    }
+  ],
+  "commands": [
+    {
+      "id": "env-dump",
+      "pattern": "^(env|printenv|export\\s+-p)\\s*$",
+      "level": "ask",
+      "reason": "dumping the whole process environment exposes tokens"
+    },
+    {
+      "id": "db-dump-command",
+      "pattern": "(^|\\s)(mysqldump|mariadb-dump)\\b(?!.*(--no-data|\\s-d(\\s|$)))|\\bwarden\\s+db\\s+dump\\b|\\bddev\\s+export-db\\b|\\bn98-magerun2?(\\.phar)?\\s+db:dump\\b(?!.*--no-data)",
+      "level": "ask",
+      "reason": "a full database dump contains customer and order data"
+    }
+  ],
+  "text": [
+    {
+      "id": "core-config-secrets",
+      "requires": "\\bselect\\b",
+      "pattern": "core_config_data[\\s\\S]*(password|passwd|secret|token|api_?key|private_key|license)|(password|passwd|secret|token|api_?key|private_key)[\\s\\S]*core_config_data",
+      "level": "ask",
+      "reason": "reading credential values from core_config_data",
+      "hint": "`bin/magento config:show <path>` masks sensitive values."
+    }
+  ],
+  "pii": {
+    "id": "pii-select",
+    "level": "ask",
+    "reason": "SELECT from a table with personal data (names, emails, addresses, payment data, tokens)",
+    "hint": "COUNT(*) and schema queries (SHOW CREATE TABLE, DESCRIBE) pass without asking.",
+    "tables": [
+      "customer_entity",
+      "customer_entity_varchar",
+      "customer_entity_text",
+      "customer_address_entity",
+      "customer_address_entity_varchar",
+      "customer_address_entity_text",
+      "customer_grid_flat",
+      "sales_order",
+      "sales_order_grid",
+      "sales_order_address",
+      "sales_order_payment",
+      "sales_invoice_grid",
+      "sales_creditmemo_grid",
+      "sales_shipment_grid",
+      "quote",
+      "quote_address",
+      "quote_payment",
+      "newsletter_subscriber",
+      "vault_payment_token",
+      "persistent_session",
+      "admin_user",
+      "admin_user_session",
+      "oauth_token",
+      "oauth_consumer",
+      "integration"
+    ]
+  },
+  "allow": []
+}

@@ -52,6 +52,23 @@ updates them; use `--copy` when the agent runs in a container that cannot see th
 export MAGENTO_EXEC="docker compose exec -T my-php-service"
 ```
 
+## Sensitive-data guard hook
+
+A hook for Claude Code, Codex and Cursor that stops the agent from reading secrets and customer data by
+accident.
+
+```bash
+./install.sh --hooks --agent claude   # or codex, cursor
+```
+
+- **Blocked:** `app/etc/env.php`, `auth.json`, `.env`, private keys and stored credentials.
+- **Asks you first:** logs, DB dumps, import/export files, `SELECT` from customer/order tables.
+- Instead of `env.php` use `bin/magento config:show <path>` or
+  `skills/magento-exec-shell-cmd/scripts/env-redacted.sh`.
+
+It prevents accidents, not attacks: keep production secrets and data out of local copies.
+Details, overrides and limits: [hooks/README.md](hooks/README.md).
+
 ## Contributing
 
 - One rule, one place: change standards only in the `standards.md` files; other files link to them.
