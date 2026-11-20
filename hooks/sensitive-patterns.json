@@ -28,6 +28,14 @@
       "reason": ".magento.env.yaml may contain environment variables with secrets"
     },
     {
+      "id": "magento-etc-search",
+      "pattern": "(^|/)app/etc/?$",
+      "level": "ask",
+      "reason": "searching or copying the whole app/etc directory includes env.php",
+      "hint": "Search app/etc/config.php or app/etc/di.xml explicitly",
+      "onlyCommands": ["grep", "egrep", "fgrep", "rg", "ag", "ack", "git-grep", "tar", "zip", "cp", "rsync", "scp", "cat", "head", "tail", "less"]
+    },
+    {
       "id": "private-keys",
       "pattern": "\\.(pem|key|p12|pfx|jks|keystore)$",
       "level": "deny",

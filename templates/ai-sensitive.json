@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to <project>/.ai-sensitive.json to tune hooks/guard-sensitive.js for this project. All keys are optional.",
+  "_comment": "Copy to <project>/.ai-sensitive.json (untrusted: adds rules, disables only ask rules, allow works inside the project root) or ~/.config/ai-sensitive.json (trusted: may allow or disable anything). All keys are optional.",
   "paths": [
     { "id": "project-secrets", "pattern": "(^|/)config/secrets/", "level": "deny", "reason": "project secrets folder" }
   ],

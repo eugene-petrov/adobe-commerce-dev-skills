@@ -79,7 +79,10 @@ mentioned anywhere in the command, e.g. `cat`, `php -r 'include ...'`, `grep ...
 arguments that can read something: path-like values, `command` strings and SQL (e.g. a database MCP server).
 Text the agent writes is not inspected: chat messages and document bodies sent through MCP, `git commit` /
 `git tag` messages, `gh pr|issue` titles and bodies, and heredocs redirected into a file (`cat > f <<EOF`).
-A heredoc fed to an interpreter (`php <<EOF`, `mysql <<SQL`) is still checked.
+Anything the shell would execute inside that text (`$(...)`, backticks, expansion in an unquoted `<<EOF`) is
+still checked, and so is a heredoc fed to an interpreter (`php <<EOF`, `cat <<EOF | php`, `mysql <<SQL`).
+SQL rules apply to shell commands only when they run a database client (`mysql`, `warden db`, `ddev mysql`,
+`psql`, `n98-magerun2 db:query`, ...), so `grep "select ... sales_order" app/code` passes.
 
 "Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. Cursor file reads have no
 prompt, so they are denied. Codex has no prompt either: the hook blocks and tells the agent to ask the user and
@@ -88,15 +91,22 @@ rerun with `AI_GUARD_ALLOW=1` - this prefix never unlocks a "deny" rule.
 Safe alternatives the block messages point to: `bin/magento config:show <path>` (Magento masks sensitive
 values) and `skills/magento-exec-shell-cmd/scripts/env-redacted.sh` (prints `env.php` with secrets masked).
 
-Per project, add `.ai-sensitive.json` to the repository root (template:
-[templates/ai-sensitive.json](templates/ai-sensitive.json)): extra `paths`, `piiTables`, `piiLevel`, `allow`
-regexes for false positives, and `disable` by rule id. Second layers for the same files:
+Overrides (template: [templates/ai-sensitive.json](templates/ai-sensitive.json); keys `paths`, `piiTables`,
+`piiLevel`, `allow` regexes for false positives, `disable` by rule id):
+- **Project** - `.ai-sensitive.json` in the repository root. It comes with the repository, so it is not trusted:
+  it can add rules and tables, disable only "ask" rules, and its `allow` list lifts only "ask" rules for paths
+  inside the project root. A cloned repository cannot unlock `env.php`, `~/.ssh`, credentials or any "deny" rule.
+- **User** - `~/.config/ai-sensitive.json` (or the path in `AI_SENSITIVE_CONFIG`). Trusted: can allow or disable
+  anything, for every project.
+
+Second layers for the same files:
 [templates/claude-settings.deny.json](templates/claude-settings.deny.json) (Claude Code `permissions.deny`) and
 [templates/cursorignore](templates/cursorignore) (`.cursorignore`).
 
 Limits - read before relying on it:
 - It is a guard against accidents, not a security boundary. Shell commands can be obfuscated (variables, base64,
-  scripts written to disk first), and recursive search over a whole directory is not inspected file by file.
+  scripts written to disk first). Recursive search is not inspected file by file: searching `app/etc` itself
+  asks first, but `grep -r password .` over the project root reads whatever is not git-ignored.
 - The real protection is not having production secrets and data locally: anonymized database dumps, development
   credentials only, and the agent's OS-level sandbox where available.
 

@@ -37,6 +37,10 @@ const command = `"${process.execPath}" "${GUARD}" --agent ${agent}`;
 
 let raw = '';
 let config = {};
+if (uninstall && !fs.existsSync(file)) {
+    console.log(`ok       ${file} does not exist, nothing to remove`);
+    process.exit(0);
+}
 if (fs.existsSync(file)) {
     raw = fs.readFileSync(file, 'utf8');
     try { config = raw.trim() ? JSON.parse(raw) : {}; } catch (e) {

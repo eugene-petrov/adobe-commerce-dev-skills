@@ -96,6 +96,10 @@ function extract(input) {
     ti = ti && typeof ti === 'object' ? ti : {};
 
     for (const key of ['file_path', 'notebook_path', 'filePath', 'path']) pushString(subject.paths, ti[key]);
+    if (tool === 'grep' && typeof ti.glob === 'string' && ti.glob) {
+        // Grep over a directory limited by glob: "app/etc" + "env.php" reads app/etc/env.php.
+        subject.paths.push(path.join(typeof ti.path === 'string' && ti.path ? ti.path : '.', ti.glob));
+    }
 
     let command = ti.command !== undefined ? ti.command : ti.cmd;
     if (Array.isArray(command)) command = command.join(' ');
@@ -126,6 +130,7 @@ function pushString(list, value) {
 const PATH_KEY = /(path|file|filename|dir|directory|folder)s?$|^(target|source|src|dest|destination|uri)$/i;
 const COMMAND_KEY = /^(command|cmd|script|shell)$/i;
 const SQL_RE = /\bselect\b[\s\S]*\b(from|join)\b/i;
+const DB_CLIENT = /(^|[\s;&|(\/])(mysql|mariadb|mysqlsh|psql|sqlite3|clickhouse-client)(\s|$)|\bwarden\s+db\b|\bddev\s+(mysql|psql)\b|\bn98-magerun2?(\.phar)?\s+db:query\b|\bdb:query\b/i;
 
 function collectArgs(value, key, subject, depth) {
     if (depth > 8 || value === null || value === undefined) return;
@@ -151,43 +156,105 @@ function looksLikePath(value) {
 }
 
 // Shell text that is written, not read: git/gh messages and heredocs redirected into a file.
+// Text that the shell would execute (command substitution, unquoted-heredoc expansion) is never skipped.
+const SUBSTITUTION = /\$\(|`/;
+const HEREDOC = /^([^\n]*<<-?[ \t]*(['"]?)([A-Za-z_]\w*)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/gm;
+
 function stripWrittenText(text) {
     let t = String(text);
     if (/\b(git\s+(commit|tag|notes|stash)|gh\s+(pr|issue|release))\b/.test(t)) {
-        t = t.replace(/(\s(?:-m|--message|-t|--title|-b|--body|--notes)(?:\s+|=))("(?:[^"\\]|\\[\s\S])*"|'[^']*')/g, '$1""');
+        t = t.replace(
+            /(\s(?:-m|--message|-t|--title|-b|--body|--notes)(?:\s+|=))("(?:[^"\\]|\\[\s\S])*"|'[^']*')/g,
+            (all, flag, value) => (isInertMessage(value) ? `${flag}""` : all)
+        );
     }
-    return t.replace(
-        /^([^\n]*<<-?\s*(['"]?)([A-Za-z_]\w*)\2[^\n]*)\n[\s\S]*?\n[ \t]*\3[ \t]*(?=\n|$)/gm,
-        (all, head, quote, tag) => (/(^|[;&|(]\s*)(cat\b[^\n]*>|tee\s)/.test(head) ? `${head}\n${tag}` : all)
-    );
+    return t.replace(HEREDOC, (all, head, quote, tag, body) => {
+        if (!quote && SUBSTITUTION.test(body)) return all; // <<EOF expands $(...) in the body
+        return writesToFile(head) ? `${head}\n${tag}` : all;
+    });
+}
+
+// A message value is inert when the shell substitutes nothing in it: single-quoted, or double-quoted
+// without $(...)/backticks, or the usual "$(cat <<'EOF' ... EOF)" form with a plain body.
+function isInertMessage(value) {
+    if (value.startsWith("'")) return true;
+    const heredoc = value.match(/^"\$\(cat <<-?[ \t]*(['"]?)([A-Za-z_]\w*)\1[ \t]*\n([\s\S]*?)\n[ \t]*\2[ \t]*\n?\)"$/);
+    if (heredoc) return Boolean(heredoc[1]) || !SUBSTITUTION.test(heredoc[3].replace(/\\[`$]/g, ''));
+    return !SUBSTITUTION.test(value.replace(/\\[`$]/g, ''));
+}
+
+// The heredoc's own command (after the last && ; ||) only writes it to a file: cat > f, cat >> f, tee f.
+function writesToFile(head) {
+    const command = head.split(/&&|\|\||;/).pop().trim();
+    if (command.includes('|')) return false;
+    return /^cat\b.*>/.test(command) || /^tee\s/.test(command);
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Rules
 
+// Three layers:
+//   defaults  sensitive-patterns.json next to this script
+//   user      $AI_SENSITIVE_CONFIG or ~/.config/ai-sensitive.json - trusted: may allow or disable anything
+//   project   .ai-sensitive.json found from the working directory upwards - untrusted (it comes with the
+//             repository): may add rules and tables, may disable only "ask" rules, and its allow-list applies
+//             only to "ask" rules and only to paths inside the project root, so a cloned repo cannot unlock
+//             env.php, ~/.ssh or any other "deny" path.
+const LEVELS = new Set(['deny', 'ask']);
+
 function loadConfig(dirs) {
     const base = readJson(path.join(__dirname, 'sensitive-patterns.json')) || {};
-    const file = findUp(dirs.filter(Boolean), '.ai-sensitive.json');
-    const project = (file && readJson(file)) || {};
-    if (file && !readJson(file)) process.stderr.write(`guard-sensitive: ${file} is not valid JSON, ignored\n`);
-    const disabled = new Set(Array.isArray(project.disable) ? project.disable : []);
-    const rules = (key) => [...(base[key] || []), ...(project[key] || [])]
-        .filter((r) => r && r.pattern && !disabled.has(r.id))
+    const userFile = process.env.AI_SENSITIVE_CONFIG || path.join(os.homedir(), '.config', 'ai-sensitive.json');
+    const user = loadOverride(fs.existsSync(userFile) ? userFile : '');
+    const projectFile = findUp(dirs.filter(Boolean), '.ai-sensitive.json');
+    const project = loadOverride(projectFile && path.resolve(projectFile) !== path.resolve(userFile) ? projectFile : '');
+    const projectRoot = projectFile ? path.dirname(path.resolve(projectFile)) : '';
+
+    const byId = new Map();
+    for (const key of ['paths', 'commands', 'text']) for (const r of base[key] || []) byId.set(r.id, r);
+    const disabled = new Set(user.disable || []);
+    for (const id of project.disable || []) {
+        const rule = byId.get(id);
+        if (rule && rule.level === 'deny') {
+            process.stderr.write(`guard-sensitive: ${projectFile} cannot disable deny rule "${id}" (use ${userFile})\n`);
+        } else {
+            disabled.add(id);
+        }
+    }
+
+    const valid = (r) => r && r.pattern && LEVELS.has(r.level) && !disabled.has(r.id);
+    const rules = (key) => [...(base[key] || []), ...(user[key] || []), ...(project[key] || [])]
+        .filter(valid)
         .map((r) => ({ ...r, re: new RegExp(r.pattern, 'i'), requiresRe: r.requires ? new RegExp(r.requires, 'i') : null }));
 
     const pii = { ...(base.pii || {}) };
-    pii.tables = [...(pii.tables || []), ...(project.piiTables || [])];
-    if (project.piiLevel) pii.level = project.piiLevel;
+    pii.tables = [...(pii.tables || []), ...(user.piiTables || []), ...(project.piiTables || [])];
+    for (const level of [user.piiLevel, project.piiLevel]) if (LEVELS.has(level)) pii.level = level;
     pii.enabled = !disabled.has(pii.id || 'pii-select') && pii.tables.length > 0;
 
+    const allow = (list, root) => (Array.isArray(list) ? list : []).map((p) => ({ re: new RegExp(p, 'i'), root }));
     return {
         paths: rules('paths'),
         commands: rules('commands'),
         text: rules('text'),
         pii,
-        allow: [...(base.allow || []), ...(project.allow || [])].map((p) => new RegExp(p, 'i')),
-        source: file || '',
+        allow: [...allow(base.allow, ''), ...allow(user.allow, ''), ...allow(project.allow, projectRoot)],
     };
+}
+
+function loadOverride(file) {
+    if (!file) return {};
+    const data = readJson(file);
+    if (!data || typeof data !== 'object') {
+        process.stderr.write(`guard-sensitive: ${file} is not valid JSON, ignored\n`);
+        return {};
+    }
+    return data;
+}
+
+function isInside(file, root) {
+    const rel = path.relative(root, file);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 function readJson(file) {
@@ -225,8 +292,10 @@ function evaluate(subject, config) {
         }
     }
 
-    // SQL rules see shell commands (without written text) and SQL found in tool arguments.
-    for (const text of [...subject.texts.map(stripWrittenText), ...subject.sql]) {
+    // SQL rules see shell commands that run a database client (grep/rg over code with SQL in the pattern
+    // is not a query) and SQL found in tool arguments.
+    const shellSql = subject.texts.map(stripWrittenText).filter((t) => DB_CLIENT.test(t));
+    for (const text of [...shellSql, ...subject.sql]) {
         for (const rule of config.text) {
             if ((!rule.requiresRe || rule.requiresRe.test(text)) && rule.re.test(text)) hits.push(rule);
         }
@@ -250,11 +319,17 @@ function checkPath(candidate, head, cwd, config, hits) {
     const raw = candidate.replace(/^['"]+|['"]+$/g, '');
     if (!raw || raw.length < 4) return;
     const expanded = raw.replace(/^~(?=\/|$)/, os.homedir());
-    const variants = [raw, expanded];
-    if (!path.isAbsolute(expanded) && cwd) variants.push(path.resolve(cwd, expanded));
-    if (variants.some((v) => config.allow.some((re) => re.test(v)))) return;
+    const absolute = path.isAbsolute(expanded) ? path.normalize(expanded) : path.resolve(cwd || process.cwd(), expanded);
+    const variants = [raw, expanded, absolute];
+    const matching = config.allow.filter((a) => (!a.root || isInside(absolute, a.root)) && variants.some((v) => a.re.test(v)));
+    if (matching.some((a) => !a.root)) return; // defaults / user config: trusted
+    const projectAllowed = matching.length > 0; // project config: unlocks only "ask" rules
     for (const rule of config.paths) {
+        if (projectAllowed && rule.level !== 'deny') continue;
         if (head && Array.isArray(rule.exceptCommands) && rule.exceptCommands.includes(head)) continue;
+        // onlyCommands: the rule is about what these commands do with the path (e.g. recursive search of a
+        // directory); direct file-tool calls (no head) are included.
+        if (head && Array.isArray(rule.onlyCommands) && !rule.onlyCommands.includes(head)) continue;
         if (variants.some((v) => rule.re.test(v))) hits.push({ ...rule, match: raw });
     }
 }
