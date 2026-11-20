@@ -76,7 +76,10 @@ What it checks ([hooks/sensitive-patterns.json](hooks/sensitive-patterns.json)):
 
 The same rules apply to file tools (Read/Edit/Grep, Cursor file reads and attachments), to shell commands (paths
 mentioned anywhere in the command, e.g. `cat`, `php -r 'include ...'`, `grep ... auth.json`) and to MCP tool
-arguments (e.g. SQL sent to a database MCP server).
+arguments that can read something: path-like values, `command` strings and SQL (e.g. a database MCP server).
+Text the agent writes is not inspected: chat messages and document bodies sent through MCP, `git commit` /
+`git tag` messages, `gh pr|issue` titles and bodies, and heredocs redirected into a file (`cat > f <<EOF`).
+A heredoc fed to an interpreter (`php <<EOF`, `mysql <<SQL`) is still checked.
 
 "Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. Cursor file reads have no
 prompt, so they are denied. Codex has no prompt either: the hook blocks and tells the agent to ask the user and

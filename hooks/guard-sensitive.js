@@ -23,8 +23,6 @@ const FILE_TOOLS = new Set(['read', 'edit', 'multiedit', 'write', 'notebookedit'
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'xargs', 'nice']);
 const BYPASS = /\bAI_GUARD_ALLOW=1\b/;
 
-main();
-
 function main() {
     const agent = argValue('--agent') || '';
     let input = {};
@@ -61,12 +59,12 @@ function detectAgent(agent, input) {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// What does this tool call touch? -> { kind, cwd, paths: [], texts: [] }
+// What does this tool call touch? -> { kind, cwd, paths: [], texts: [] (shell commands), sql: [] }
 
 function extract(input) {
     const event = input.hook_event_name || '';
     const roots = Array.isArray(input.workspace_roots) ? input.workspace_roots : [];
-    const subject = { kind: 'tool', cwd: input.cwd || roots[0] || process.cwd(), paths: [], texts: [] };
+    const subject = { kind: 'tool', cwd: input.cwd || roots[0] || process.cwd(), paths: [], texts: [], sql: [] };
 
     if (event === 'beforeReadFile' || event === 'beforeTabFileRead') {
         subject.kind = 'read';
@@ -81,7 +79,11 @@ function extract(input) {
     }
     if (event === 'beforeMCPExecution') {
         subject.kind = 'mcp';
-        pushString(subject.texts, typeof input.tool_input === 'string' ? input.tool_input : JSON.stringify(input.tool_input || {}));
+        let args = input.tool_input;
+        if (typeof args === 'string') {
+            try { args = JSON.parse(args); } catch (e) { /* keep the raw string */ }
+        }
+        collectArgs(args, '', subject, 0);
         return subject;
     }
 
@@ -110,13 +112,54 @@ function extract(input) {
     }
     if (!FILE_TOOLS.has(tool)) {
         subject.kind = 'mcp';
-        subject.texts.push(JSON.stringify(ti));
+        collectArgs(ti, '', subject, 0);
     }
     return subject;
 }
 
 function pushString(list, value) {
     if (typeof value === 'string' && value) list.push(value);
+}
+
+// MCP / other tool arguments: only what can read something - path-like values, command strings and SQL.
+// Free text (chat messages, document bodies, titles) is content the agent writes, not a read.
+const PATH_KEY = /(path|file|filename|dir|directory|folder)s?$|^(target|source|src|dest|destination|uri)$/i;
+const COMMAND_KEY = /^(command|cmd|script|shell)$/i;
+const SQL_RE = /\bselect\b[\s\S]*\b(from|join)\b/i;
+
+function collectArgs(value, key, subject, depth) {
+    if (depth > 8 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+        for (const v of value) collectArgs(v, key, subject, depth + 1);
+        return;
+    }
+    if (typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) collectArgs(v, k, subject, depth + 1);
+        return;
+    }
+    if (typeof value !== 'string' || !value) return;
+    if (COMMAND_KEY.test(key)) {
+        subject.texts.push(value);
+        return;
+    }
+    if (PATH_KEY.test(key) || looksLikePath(value)) subject.paths.push(value);
+    if (SQL_RE.test(value)) subject.sql.push(value);
+}
+
+function looksLikePath(value) {
+    return value.length < 1024 && !/\s/.test(value) && (/[\/\\]/.test(value) || /^[.~]/.test(value));
+}
+
+// Shell text that is written, not read: git/gh messages and heredocs redirected into a file.
+function stripWrittenText(text) {
+    let t = String(text);
+    if (/\b(git\s+(commit|tag|notes|stash)|gh\s+(pr|issue|release))\b/.test(t)) {
+        t = t.replace(/(\s(?:-m|--message|-t|--title|-b|--body|--notes)(?:\s+|=))("(?:[^"\\]|\\[\s\S])*"|'[^']*')/g, '$1""');
+    }
+    return t.replace(
+        /^([^\n]*<<-?\s*(['"]?)([A-Za-z_]\w*)\2[^\n]*)\n[\s\S]*?\n[ \t]*\3[ \t]*(?=\n|$)/gm,
+        (all, head, quote, tag) => (/(^|[;&|(]\s*)(cat\b[^\n]*>|tee\s)/.test(head) ? `${head}\n${tag}` : all)
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -173,12 +216,17 @@ function evaluate(subject, config) {
 
     for (const p of subject.paths) checkPath(p, '', subject.cwd, config, hits);
 
-    for (const text of subject.texts) {
+    for (const raw of subject.texts) {
+        const text = stripWrittenText(raw);
         for (const segment of segments(text)) {
             const head = firstWord(segment);
             for (const rule of config.commands) if (rule.re.test(segment)) hits.push(rule);
             for (const token of segment.match(/[\w.~\/@+-]+/g) || []) checkPath(token, head, subject.cwd, config, hits);
         }
+    }
+
+    // SQL rules see shell commands (without written text) and SQL found in tool arguments.
+    for (const text of [...subject.texts.map(stripWrittenText), ...subject.sql]) {
         for (const rule of config.text) {
             if ((!rule.requiresRe || rule.requiresRe.test(text)) && rule.re.test(text)) hits.push(rule);
         }
@@ -287,3 +335,5 @@ function describe(decision) {
     const verb = decision.level === 'deny' ? 'blocked' : 'needs approval';
     return `Sensitive-data guard ${verb}: ${parts.join('; ')}. Rules: adobe-commerce-dev-skills/hooks; project overrides: .ai-sensitive.json.`;
 }
+
+main();
