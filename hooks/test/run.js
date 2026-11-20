@@ -28,7 +28,10 @@ function decision(agent, result) {
     if (agent === 'claude') {
         if (result.status !== 0) return `exit ${result.status}`;
         if (!result.stdout) return 'allow';
-        return JSON.parse(result.stdout).hookSpecificOutput.permissionDecision;
+        const out = JSON.parse(result.stdout).hookSpecificOutput;
+        // deny that tells the agent to ask in chat = "ask" turned into a block (modes without prompts)
+        if (out.permissionDecision === 'deny' && /AI_GUARD_ALLOW=1/.test(out.permissionDecisionReason)) return 'blocked-ask';
+        return out.permissionDecision;
     }
     if (result.status === 0) return 'allow';
     if (result.status !== 2) return `exit ${result.status}`;

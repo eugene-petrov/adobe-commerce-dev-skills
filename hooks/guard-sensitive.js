@@ -41,13 +41,24 @@ function main() {
         const subject = extract(input);
         const config = loadConfig([subject.cwd, process.env.CLAUDE_PROJECT_DIR, process.env.CURSOR_PROJECT_DIR]);
         decision = evaluate(subject, config);
-        if (who === 'codex' && decision.level === 'ask' && subject.texts.some((t) => BYPASS.test(t))) {
+        if (needsChatApproval(who, input) && decision.level === 'ask' && subject.texts.some((t) => BYPASS.test(t))) {
             decision = { level: 'allow', reasons: [] };
         }
     } catch (e) {
         process.stderr.write(`guard-sensitive: internal error, allowing: ${e && e.message}\n`);
     }
     finish(who, input, decision);
+}
+
+// Where "ask" cannot reach the user as a prompt, the hook blocks instead and the agent must ask in chat, then
+// rerun with AI_GUARD_ALLOW=1: Codex (no ask), and Claude Code modes without prompts - bypassPermissions
+// disables them, dontAsk auto-denies them. In "auto" mode a hook "ask" still prompts the user (Claude Code
+// hooks docs), so the native prompt is kept there.
+const NO_PROMPT_MODES = new Set(['bypassPermissions', 'dontAsk']);
+
+function needsChatApproval(agent, input) {
+    if (agent === 'codex') return true;
+    return agent === 'claude' && NO_PROMPT_MODES.has(input.permission_mode);
 }
 
 function argValue(name) {
@@ -443,12 +454,15 @@ function finish(agent, input, decision) {
 
     if (decision.level === 'allow') process.exit(0);
 
+    const chatApproval = ' This needs the user\'s approval: ask the user, and only if they approve rerun the same command prefixed with AI_GUARD_ALLOW=1.';
+
     if (agent === 'claude') {
+        const blockAsk = decision.level === 'ask' && needsChatApproval(agent, input);
         process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
-                permissionDecision: decision.level,
-                permissionDecisionReason: message,
+                permissionDecision: blockAsk ? 'deny' : decision.level,
+                permissionDecisionReason: blockAsk ? message + chatApproval : message,
             },
         }));
         process.exit(0);
@@ -456,9 +470,7 @@ function finish(agent, input, decision) {
 
     // codex and unknown agents: block with an explanation.
     let text = message;
-    if (decision.level === 'ask') {
-        text += ' This needs the user\'s approval: ask the user, and only if they approve rerun the same command prefixed with AI_GUARD_ALLOW=1.';
-    }
+    if (decision.level === 'ask') text += chatApproval;
     process.stderr.write(text + '\n');
     process.exit(2);
 }

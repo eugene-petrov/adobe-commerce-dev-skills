@@ -90,9 +90,11 @@ Not treated as reads: commands that only look at names, sizes or existence (`ls`
 `ssh`/`scp`/`rsync`/`git` (`-i`, `IdentityFile=`, `GIT_SSH_COMMAND`). Printing or copying a key is still caught
 (`ssh host 'cat ~/.ssh/id_rsa'`, `scp host:~/.ssh/id_rsa .`).
 
-"Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. Cursor file reads have no
-prompt, so they are denied. Codex has no prompt either: the hook blocks and tells the agent to ask the user and
-rerun with `AI_GUARD_ALLOW=1` - this prefix never unlocks a "deny" rule.
+"Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. In Claude Code this includes
+`auto` mode: a hook "ask" goes to the user, not to the auto-mode classifier. Cursor file reads have no prompt,
+so they are denied. Where no prompt can reach the user - Codex, and Claude Code in `bypassPermissions` or
+`dontAsk` mode - the hook blocks and tells the agent to ask the user in chat and rerun with
+`AI_GUARD_ALLOW=1`. That prefix is honored only there and never unlocks a "deny" rule.
 
 Safe alternatives the block messages point to: `bin/magento config:show <path>` (Magento masks sensitive
 values) and `skills/magento-exec-shell-cmd/scripts/env-redacted.sh` (prints `env.php` with secrets masked).
