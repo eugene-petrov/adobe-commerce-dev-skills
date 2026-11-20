@@ -1,0 +1,24 @@
+# Copy to <project>/.cursorignore: Cursor does not index these files or put them into AI context.
+# Second layer next to the guard hook (hooks/guard-sensitive.js); keep both in sync with sensitive-patterns.json.
+app/etc/env.php
+app/etc/env.php.*
+auth.json
+.env
+.env.*
+!.env.example
+!.env.dist
+.magento.env.yaml
+*.sql
+*.sql.*
+*.pem
+*.key
+var/log/
+var/report/
+var/export/
+var/import/
+var/importexport/
+var/import_history/
+var/backups/
+pub/media/customer/
+pub/media/customer_address/
+pub/media/import/

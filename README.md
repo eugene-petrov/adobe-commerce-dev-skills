@@ -52,6 +52,53 @@ updates them; use `--copy` when the agent runs in a container that cannot see th
 export MAGENTO_EXEC="docker compose exec -T my-php-service"
 ```
 
+## Sensitive-data guard hook
+
+[hooks/guard-sensitive.js](hooks/guard-sensitive.js) is a `PreToolUse`-style hook for Claude Code, Codex and
+Cursor that stops an agent from reading secrets and personal data by accident. It needs Node.js and has no
+dependencies.
+
+```bash
+./install.sh --hooks --agent claude    # ~/.claude/settings.json
+./install.sh --hooks --agent codex     # ~/.codex/hooks.json - then trust the hook when Codex asks
+./install.sh --hooks --agent cursor    # ~/.cursor/hooks.json (beforeReadFile / beforeShellExecution / beforeMCPExecution)
+./install.sh --uninstall-hooks --agent cursor
+```
+
+The installer adds one entry next to the existing hooks and writes `<config>.bak` first; re-running it is a no-op.
+
+What it checks ([hooks/sensitive-patterns.json](hooks/sensitive-patterns.json)):
+
+| Level | What |
+|---|---|
+| deny | `app/etc/env.php`, `auth.json`, `.env*` (not `.env.example`/`.dist`), private keys, `~/.ssh` keys, stored credentials (`.git-credentials`, `.netrc`, `.my.cnf`, AWS, Docker, gh, magento-cloud) |
+| ask | `var/log`, `var/report`, import/export files and backups, `pub/media/customer`, DB dumps (files and `mysqldump`-like commands), `.magento.env.yaml`, registry configs, dumping the whole environment, `SELECT` from customer/order/quote/admin/token tables (except `COUNT(*)`), credential paths in `core_config_data` |
+
+The same rules apply to file tools (Read/Edit/Grep, Cursor file reads and attachments), to shell commands (paths
+mentioned anywhere in the command, e.g. `cat`, `php -r 'include ...'`, `grep ... auth.json`) and to MCP tool
+arguments (e.g. SQL sent to a database MCP server).
+
+"Ask" means: Claude Code and Cursor (shell, MCP) show their own approval prompt. Cursor file reads have no
+prompt, so they are denied. Codex has no prompt either: the hook blocks and tells the agent to ask the user and
+rerun with `AI_GUARD_ALLOW=1` - this prefix never unlocks a "deny" rule.
+
+Safe alternatives the block messages point to: `bin/magento config:show <path>` (Magento masks sensitive
+values) and `skills/magento-exec-shell-cmd/scripts/env-redacted.sh` (prints `env.php` with secrets masked).
+
+Per project, add `.ai-sensitive.json` to the repository root (template:
+[templates/ai-sensitive.json](templates/ai-sensitive.json)): extra `paths`, `piiTables`, `piiLevel`, `allow`
+regexes for false positives, and `disable` by rule id. Second layers for the same files:
+[templates/claude-settings.deny.json](templates/claude-settings.deny.json) (Claude Code `permissions.deny`) and
+[templates/cursorignore](templates/cursorignore) (`.cursorignore`).
+
+Limits - read before relying on it:
+- It is a guard against accidents, not a security boundary. Shell commands can be obfuscated (variables, base64,
+  scripts written to disk first), and recursive search over a whole directory is not inspected file by file.
+- The real protection is not having production secrets and data locally: anonymized database dumps, development
+  credentials only, and the agent's OS-level sandbox where available.
+
+Tests: `node hooks/test/run.js` (cases for all three agents in [hooks/test/cases.json](hooks/test/cases.json)).
+
 ## Contributing
 
 - One rule, one place: change standards only in the `standards.md` files; other files link to them.

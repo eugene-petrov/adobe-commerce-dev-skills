@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to <project>/.ai-sensitive.json to tune hooks/guard-sensitive.js for this project. All keys are optional.",
+  "paths": [
+    { "id": "project-secrets", "pattern": "(^|/)config/secrets/", "level": "deny", "reason": "project secrets folder" }
+  ],
+  "piiTables": ["vendor_loyalty_member", "vendor_gift_registry_address"],
+  "piiLevel": "ask",
+  "allow": ["(^|/)dev/tests/.*\\.sql$"],
+  "disable": []
+}

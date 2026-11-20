@@ -1,0 +1,17 @@
+{
+  "_comment": "Merge into <project>/.claude/settings.json (or ~/.claude/settings.json): Claude Code refuses these reads natively, before any hook runs. Second layer next to hooks/guard-sensitive.js; it does not cover Bash.",
+  "permissions": {
+    "deny": [
+      "Read(**/app/etc/env.php)",
+      "Read(**/app/etc/env.php.*)",
+      "Read(**/auth.json)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(~/.ssh/id_*)",
+      "Read(~/.composer/auth.json)"
+    ]
+  }
+}

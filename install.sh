@@ -4,6 +4,7 @@
 # Usage:
 #   ./install.sh --list
 #   ./install.sh [options] <skill>... | --all
+#   ./install.sh --hooks|--uninstall-hooks --agent claude|codex|cursor
 #
 # Options:
 #   --agent claude|codex   target agent (default: claude)
@@ -12,6 +13,9 @@
 #   --project              base = current directory (default: base = $HOME, i.e. global install)
 #   --copy                 copy instead of symlink (use when the agent runs in a container)
 #   --force                replace an existing skill directory/link with the same name
+#   --hooks                also register the sensitive-data guard hook (hooks/guard-sensitive.js) in the
+#                          agent's user config; --agent cursor is supported for hooks only
+#   --uninstall-hooks      remove the guard hook from the agent's user config
 #
 # Dependencies listed in skills/<name>/requires.txt are installed automatically.
 # Symlinked skills update with `git pull`; copied skills need re-running the installer.
@@ -26,8 +30,9 @@ base="$HOME"
 mode="link"
 force=0
 requested=""
+hooks=""
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 list_skills() {
     for d in "$skills_dir"/*/; do
@@ -46,6 +51,8 @@ while [ $# -gt 0 ]; do
         --project) base="$(pwd -P)" ;;
         --copy) mode="copy" ;;
         --force) force=1 ;;
+        --hooks) hooks="install" ;;
+        --uninstall-hooks) hooks="uninstall" ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "Unknown option: $1" >&2; usage; exit 2 ;;
         *) requested="$requested $1" ;;
@@ -53,13 +60,23 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+if [ -n "$hooks" ]; then
+    command -v node >/dev/null 2>&1 || { echo "The guard hook needs Node.js (node) on PATH." >&2; exit 1; }
+    if [ "$hooks" = "uninstall" ]; then
+        node "$repo/hooks/install-hooks.js" --agent "$agent" --uninstall
+    else
+        node "$repo/hooks/install-hooks.js" --agent "$agent"
+    fi
+    [ -n "${requested// /}" ] || exit 0
+fi
+
 [ -n "${requested// /}" ] || { usage; exit 2; }
 
 if [ -z "$target" ]; then
     case "$agent" in
         claude) target="$base/.claude/skills" ;;
         codex) target="$base/.agents/skills" ;;
-        *) echo "Unknown agent '$agent'; use --dir PATH for other agents." >&2; exit 2 ;;
+        *) echo "Skills for agent '$agent': use --dir PATH (the folder that agent reads SKILL.md skills from)." >&2; exit 2 ;;
     esac
 fi
 

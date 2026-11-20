@@ -36,7 +36,10 @@ Then run commands as `<wrapper> <command>`, or simply through the helper:
 - If detection is wrong, ask the user once and suggest setting `MAGENTO_EXEC`, e.g.
   `export MAGENTO_EXEC="docker compose exec -T php"`. The override wins over detection.
 - Database access goes through the project's own tool (`warden db connect`, `ddev mysql`,
-  `bin/mysql`, `mysql` with credentials from `app/etc/env.php`). Read-only queries unless the user asks.
+  `bin/mysql`), which needs no credentials. Read-only queries unless the user asks. Prefer `COUNT(*)` and
+  specific non-personal columns over `SELECT *` on customer/order tables.
+- Do not read `app/etc/env.php` (secrets); for its structure run `scripts/env-redacted.sh` from the Magento root
+  (values of passwords, keys and tokens are masked), for config values use `bin/magento config:show <path>`.
 - In a sandboxed agent the Docker socket may be unavailable; a "Docker is not running" message is not proof.
   Report the real error and ask for the permission instead of falling back silently to host PHP.
 - Host PHP may differ from the project's PHP version; prefer the project runtime for `php -l`, phpcs and tests.
